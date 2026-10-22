@@ -1,0 +1,19 @@
+seed: 42
+num_classes: 19
+image_size: [64, 64]
+
+batch_size: 2
+mixed_precision: "no"
+
+arch: "unet"
+encoder_name: "resnet18"
+encoder_weights: null
+
+epochs: 1
+lr: 0.0001
+weight_decay: 0.01
+num_workers: 0
+
+use_wandb: false
+checkpoint_dir: "checkpoints/smoke_test"
+data_dir: "data/dacl10k"
