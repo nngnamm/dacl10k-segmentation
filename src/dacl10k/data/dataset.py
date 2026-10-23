@@ -1,177 +1,213 @@
 
-"""PyTorch Dataset for preprocessed DACL10K NumPy files."""
+"""DACL10K dataset from Hugging Face FiftyOne export."""
 
+import json
 from pathlib import Path
 
 import numpy as np
 import torch
+from PIL import Image, ImageDraw
 from torch.utils.data import Dataset
 
 from dacl10k.data.transforms import get_transforms
 
 
 CLASS_NAMES = (
-    "Crack",
-    "ACrack",
-    "Wetspot",
-    "Efflorescence",
-    "Rust",
-    "Rockpocket",
-    "Hollowareas",
-    "Cavity",
-    "Spalling",
-    "Graffiti",
-    "Weathering",
-    "Restformwork",
-    "ExposedRebars",
-    "Bearing",
-    "EJoint",
-    "Drainage",
-    "PEquipment",
-    "JTape",
-    "WConccor",
+    "Crack", "ACrack", "Wetspot", "Efflorescence", "Rust",
+    "Rockpocket", "Hollowareas", "Cavity", "Spalling", "Graffiti",
+    "Weathering", "Restformwork", "ExposedRebars", "Bearing",
+    "EJoint", "Drainage", "PEquipment", "JTape", "WConccor",
 )
 
 
+def _is_point(value) -> bool:
+    return (
+        isinstance(value, (list, tuple))
+        and len(value) >= 2
+        and isinstance(value[0], (int, float))
+        and isinstance(value[1], (int, float))
+    )
+
+
 class DACL10kDataset(Dataset):
-    """Read 512x512 RGB images and 19-channel binary masks from .npy files."""
+    """Read Hugging Face images and generate multi-label polygon masks."""
 
     NUM_CLASSES = len(CLASS_NAMES)
+    CLASS_TO_INDEX = {name: i for i, name in enumerate(CLASS_NAMES)}
 
-    def __init__(
-        self,
-        root_dir: str | Path,
-        split: str,
-        transforms=None,
-    ) -> None:
+    def __init__(self, root_dir, split, transforms=None):
         self.root_dir = Path(root_dir)
+        requested_split = split.lower()
 
-        split = split.lower()
-        if split == "train":
-            self.split = "train"
-        elif split in {"val", "valid", "validation"}:
+        if requested_split in {"val", "valid", "validation"}:
             self.split = "validation"
+        elif requested_split == "train":
+            self.split = "train"
         else:
-            raise ValueError(
-                f"Unsupported split {split!r}; use 'train' or 'val'."
-            )
+            raise ValueError("split must be 'train' or 'validation'")
 
-        self.image_dir = self.root_dir / "images" / self.split
-        self.annotation_dir = self.root_dir / "annotations" / self.split
+        samples_file = self.root_dir / "samples.json"
+        image_root = self.root_dir / "data"
 
-        for directory in (self.image_dir, self.annotation_dir):
-            if not directory.is_dir():
-                raise FileNotFoundError(
-                    f"Dataset directory does not exist: {directory}"
-                )
+        if not samples_file.is_file():
+            raise FileNotFoundError(f"Metadata not found: {samples_file}")
+        if not image_root.is_dir():
+            raise FileNotFoundError(f"Images not found: {image_root}")
 
-        image_index = {
-            path.stem: path
-            for path in self.image_dir.glob("*.npy")
-        }
-        annotation_index = {
-            path.stem: path
-            for path in self.annotation_dir.glob("*.npy")
-        }
+        with samples_file.open("r", encoding="utf-8") as f:
+            records = json.load(f)["samples"]
 
-        if not image_index:
-            raise FileNotFoundError(
-                f"No .npy images found in {self.image_dir}"
-            )
-        if not annotation_index:
-            raise FileNotFoundError(
-                f"No .npy masks found in {self.annotation_dir}"
-            )
-
-        missing_masks = sorted(set(image_index) - set(annotation_index))
-        missing_images = sorted(set(annotation_index) - set(image_index))
-
-        if missing_masks or missing_images:
-            raise ValueError(
-                "Image/mask filename mismatch. "
-                f"Images without masks: {missing_masks[:5]}; "
-                f"masks without images: {missing_images[:5]}."
-            )
-
-        self.samples = [
-            (image_index[stem], annotation_index[stem])
-            for stem in sorted(image_index)
+        # Use metadata tags, not filename guesses, to determine the split.
+        split_records = [
+            record for record in records
+            if self.split in {
+                str(tag).lower() for tag in (record.get("tags") or [])
+            }
         ]
+
+        self.samples = []
+        missing_images = []
+        missing_annotations = []
+
+        for record in split_records:
+            filepath = record.get("filepath")
+            segmentation = record.get("semseg_ground_truth_filled")
+
+            if not filepath:
+                raise ValueError("A DACL10K record has no filepath.")
+
+            filename = str(filepath).replace("\\", "/").rsplit("/", 1)[-1]
+            image_path = image_root / str(filepath).replace("\\", "/")
+
+            # Some metadata may contain paths from a different machine.
+            # Reconstruct the path using the known image directory if needed.
+            if not image_path.is_file():
+                matches = list(image_root.rglob(filename))
+                image_path = matches[0] if matches else image_path
+
+            if not image_path.is_file():
+                missing_images.append(filename)
+                continue
+
+            if not isinstance(segmentation, dict):
+                missing_annotations.append(filename)
+                continue
+
+            self.samples.append((image_path, segmentation))
+
+        if missing_images:
+            raise FileNotFoundError(
+                f"{len(missing_images)} {self.split} images are missing; "
+                f"examples: {missing_images[:5]}"
+            )
+        if missing_annotations:
+            raise ValueError(
+                f"{len(missing_annotations)} {self.split} samples lack "
+                f"segmentation annotations; examples: {missing_annotations[:5]}"
+            )
+        if not self.samples:
+            raise RuntimeError(f"No samples found for {self.split}")
 
         self.transforms = transforms or get_transforms(
             "train" if self.split == "train" else "val",
             image_size=(512, 512),
         )
+        self.height = self.transforms.height
+        self.width = self.transforms.width
 
         print(
-            f"DACL10K {self.split}: "
-            f"{len(self.samples)} matched image-mask pairs."
+            f"DACL10K HF {self.split}: "
+            f"{len(self.samples)} image-mask pairs."
         )
 
-    def __len__(self) -> int:
+    def _make_mask(self, segmentation):
+        """Rasterize normalized polygon points into a binary HWC mask."""
+        mask = np.zeros(
+            (self.height, self.width, self.NUM_CLASSES),
+            dtype=np.uint8,
+        )
+
+        layers = {}
+
+        for polyline in segmentation.get("polylines", []):
+            label = str(polyline.get("label", "")).strip()
+            class_index = self.CLASS_TO_INDEX.get(label)
+            if class_index is None:
+                continue
+
+            points = polyline.get("points") or []
+            if not points:
+                continue
+
+            # FiftyOne may represent points as one contour or multiple contours.
+            contours = [points] if _is_point(points[0]) else points
+
+            for contour in contours:
+                if not isinstance(contour, list) or len(contour) < 3:
+                    continue
+                if not all(_is_point(point) for point in contour):
+                    continue
+
+                normalized = all(
+                    -1e-6 <= float(x) <= 1.000001
+                    and -1e-6 <= float(y) <= 1.000001
+                    for x, y in contour
+                )
+
+                if not normalized:
+                    raise ValueError(
+                        "Expected normalized polygon coordinates in [0,1]; "
+                        "found pixel coordinates."
+                    )
+
+                pixel_points = [
+                    (
+                        max(0, min(self.width - 1, round(float(x) * (self.width - 1)))),
+                        max(0, min(self.height - 1, round(float(y) * (self.height - 1)))),
+                    )
+                    for x, y in contour
+                ]
+
+                if class_index not in layers:
+                    layers[class_index] = Image.new(
+                        "L", (self.width, self.height), 0
+                    )
+
+                ImageDraw.Draw(layers[class_index]).polygon(
+                    pixel_points, fill=1
+                )
+
+        for class_index, layer in layers.items():
+            mask[:, :, class_index] = np.asarray(
+                layer, dtype=np.uint8
+            )
+
+        return mask
+
+    def __len__(self):
         return len(self.samples)
 
-    def __getitem__(self, index: int):
-        image_path, mask_path = self.samples[index]
+    def __getitem__(self, index):
+        image_path, segmentation = self.samples[index]
 
-        # Both files contain numeric NumPy arrays, not pickled Python objects.
-        image = np.load(image_path, allow_pickle=False)
-        mask = np.load(mask_path, allow_pickle=False)
+        with Image.open(image_path) as image_file:
+            image = image_file.convert("RGB")
+            image = np.asarray(image, dtype=np.uint8).copy()
 
-        if image.dtype != np.uint8 or image.ndim != 3:
-            raise ValueError(
-                f"Invalid image at {image_path}: "
-                f"shape={image.shape}, dtype={image.dtype}"
-            )
-
-        if image.shape[2] != 3:
-            raise ValueError(
-                f"Expected RGB image with 3 channels, got {image.shape}"
-            )
-
-        expected_mask_shape = (
-            image.shape[0],
-            image.shape[1],
-            self.NUM_CLASSES,
-        )
-        if mask.shape != expected_mask_shape:
-            raise ValueError(
-                f"Invalid mask at {mask_path}: shape={mask.shape}; "
-                f"expected {expected_mask_shape}"
-            )
-
-        if mask.dtype != np.uint8:
-            raise ValueError(
-                f"Expected uint8 mask at {mask_path}, got {mask.dtype}"
-            )
-
-        if not np.isin(mask, (0, 1)).all():
-            raise ValueError(
-                f"Mask contains values other than 0 and 1: {mask_path}"
-            )
-
-        # Transforms expect HWC NumPy arrays and return CHW float tensors.
+        mask = self._make_mask(segmentation)
         image_tensor, mask_tensor = self.transforms(image, mask)
 
-        if image_tensor.ndim != 3 or image_tensor.shape[0] != 3:
+        if image_tensor.shape != (3, self.height, self.width):
             raise RuntimeError(
-                f"Invalid transformed image shape: {tuple(image_tensor.shape)}"
+                f"Unexpected image shape: {tuple(image_tensor.shape)}"
             )
-
-        if mask_tensor.ndim != 3:
+        if mask_tensor.shape != (19, self.height, self.width):
             raise RuntimeError(
-                f"Invalid transformed mask shape: {tuple(mask_tensor.shape)}"
+                f"Unexpected mask shape: {tuple(mask_tensor.shape)}"
             )
-
-        if mask_tensor.shape[0] != self.NUM_CLASSES:
-            raise RuntimeError(
-                f"Expected {self.NUM_CLASSES} mask channels, "
-                f"got {mask_tensor.shape[0]}"
-            )
-
-        if image_tensor.shape[1:] != mask_tensor.shape[1:]:
-            raise RuntimeError(
-                "Transformed image and mask have different spatial sizes."
-            )
+        if not torch.isfinite(image_tensor).all():
+            raise RuntimeError(f"Non-finite image tensor: {image_path}")
+        if not torch.all((mask_tensor == 0) | (mask_tensor == 1)):
+            raise RuntimeError(f"Non-binary mask: {image_path}")
 
         return image_tensor, mask_tensor
