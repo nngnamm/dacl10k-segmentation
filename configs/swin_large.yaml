@@ -11,7 +11,7 @@ data:
 
 model:
   arch: "swin_large"
-  backbone_name: "tu-swin_large_patch4_window12_384"
+  backbone_name: "swin_large_patch4_window12_384"
   pretrained: true
   grad_checkpointing: true
 
