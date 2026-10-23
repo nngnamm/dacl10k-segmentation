@@ -1,5 +1,3 @@
-import json
-from pathlib import Path
 import cv2
 import numpy as np
 import torch
@@ -16,56 +14,38 @@ DACL10K_CLASSES = [
 CLASS_TO_IDX = {c.lower(): i for i, c in enumerate(DACL10K_CLASSES)}
 
 class DACL10kDataset(Dataset):
-    def __init__(self, root_dir, split="train", transforms=None):
-        self.root_dir = Path(root_dir)
-        self.split = "train" if split == "train" else "val"
+    """PyTorch Dataset đọc trực tiếp từ Hugging Face Dataset split."""
+    def __init__(self, hf_split, transforms=None):
+        self.dataset = hf_split
         self.transforms = transforms
         self.num_classes = len(DACL10K_CLASSES)
 
-        # Trỏ tới thư mục images và annotations chuẩn
-        self.img_dir = self.root_dir / "images" / self.split
-        self.ann_dir = self.root_dir / "annotations" / self.split
-        
-        if not self.img_dir.exists() and self.split == "val":
-            self.img_dir = self.root_dir / "images" / "validation"
-            self.ann_dir = self.root_dir / "annotations" / "validation"
-
-        self.image_paths = sorted(list(self.img_dir.glob("*.jpg")) + list(self.img_dir.glob("*.png")))
-
     def __len__(self):
-        return len(self.image_paths)
+        return len(self.dataset)
 
-    def _rasterize(self, ann_path, h, w):
+    def _rasterize(self, item, h, w):
         mask = np.zeros((h, w, self.num_classes), dtype=np.float32)
-        if not ann_path.exists():
-            return mask
-            
-        with open(ann_path, "r", encoding="utf-8") as f:
-            ann_data = json.load(f)
+        ann = item.get("polylines", item.get("ground_truth", {}))
+        poly_list = ann.get("polylines", []) if isinstance(ann, dict) else (ann if isinstance(ann, list) else [])
 
-        for obj in ann_data.get("objects", []):
-            label = obj.get("classTitle", "").lower().replace(" ", "")
+        for poly in poly_list:
+            label = poly.get("label", "").lower().replace(" ", "")
             if label not in CLASS_TO_IDX:
                 continue
             cls_idx = CLASS_TO_IDX[label]
-            
-            points = obj.get("points", {})
-            exterior = points.get("exterior", [])
-            if len(exterior) >= 3:
-                abs_pts = np.array(exterior, dtype=np.int32).reshape((-1, 1, 2))
-                ch = np.ascontiguousarray(mask[:, :, cls_idx])
-                cv2.fillPoly(ch, [abs_pts], 1.0)
-                mask[:, :, cls_idx] = ch
+            for pts in poly.get("points", []):
+                abs_pts = np.array([[int(x * w), int(y * h)] for x, y in pts], dtype=np.int32)
+                if len(abs_pts) >= 3:
+                    ch = np.ascontiguousarray(mask[:, :, cls_idx])
+                    cv2.fillPoly(ch, [abs_pts], 1.0)
+                    mask[:, :, cls_idx] = ch
         return mask
 
     def __getitem__(self, idx):
-        img_path = self.image_paths[idx]
-        image_bgr = cv2.imread(str(img_path))
-        image = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+        item = self.dataset[idx]
+        image = np.array(item["image"].convert("RGB"))
         h, w, _ = image.shape
-
-        ann_path = self.ann_dir / f"{img_path.stem}.json"
-        mask = self._rasterize(ann_path, h, w)
+        mask = self._rasterize(item, h, w)
 
         if self.transforms:
             aug = self.transforms(image=image, mask=mask)
@@ -80,7 +60,8 @@ class DACL10kDataset(Dataset):
 def get_transforms(img_size: int = 384, is_train: bool = True):
     if is_train:
         return A.Compose([
-            A.Resize(height=img_size, width=img_size),
+            A.PadIfNeeded(min_height=img_size, min_width=img_size, border_mode=cv2.BORDER_CONSTANT, p=1.0),
+            A.RandomCrop(height=img_size, width=img_size, p=1.0),
             A.HorizontalFlip(p=0.5),
             A.VerticalFlip(p=0.2),
             A.RandomBrightnessContrast(p=0.3),
@@ -88,7 +69,6 @@ def get_transforms(img_size: int = 384, is_train: bool = True):
             ToTensorV2(),
         ])
     return A.Compose([
-        A.Resize(height=img_size, width=img_size),
         A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
         ToTensorV2(),
     ])

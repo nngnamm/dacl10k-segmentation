@@ -1,24 +1,24 @@
 project_name: "dacl10k-segformer"
-exp_name: "segformer_b5_independent"
+exp_name: "segformer_b5_hf"
 seed: 42
 
 data:
-  data_dir: "/kaggle/input/dacl10k"  # Đường dẫn dataset trên Kaggle
+  hf_repo: "Voxel51/dacl10k"
   num_classes: 19
-  img_size: 512                     # SegFormer thiết kế tối ưu với ảnh 512x512
-  batch_size: 4                     # B5 lớn nhưng cấu trúc nhẹ hơn Swin-Large, có thể để batch_size = 4
+  img_size: 512
+  batch_size: 4
   num_workers: 2
 
 model:
   arch: "segformer"
-  encoder_name: "mit_b5"            # MiT-B5 là backbone mạnh nhất của dòng SegFormer
+  encoder_name: "mit_b5"
   pretrained: true
 
 train:
   epochs: 20
-  lr: 0.00006                       # Learning rate chuẩn cho SegFormer fine-tune
+  lr: 0.00006
   weight_decay: 0.01
-  grad_accum_steps: 2               # Effective batch size = 4 * 2 = 8
+  grad_accum_steps: 2
   focal_weight: 0.5
   dice_weight: 0.5
   save_dir: "checkpoints"

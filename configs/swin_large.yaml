@@ -1,0 +1,30 @@
+project_name: "dacl10k-swin"
+exp_name: "swin_large_hf"
+seed: 42
+
+data:
+  hf_repo: "Voxel51/dacl10k"
+  num_classes: 19
+  img_size: 384
+  batch_size: 2
+  num_workers: 2
+
+model:
+  arch: "swin_large"
+  backbone_name: "tu-swin_large_patch4_window12_384"
+  pretrained: true
+  grad_checkpointing: true
+
+train:
+  epochs: 20
+  lr: 0.00005
+  weight_decay: 0.01
+  grad_accum_steps: 4
+  focal_weight: 0.5
+  dice_weight: 0.5
+  save_dir: "checkpoints"
+
+eval:
+  window_size: 384
+  stride: 256
+  threshold: 0.5

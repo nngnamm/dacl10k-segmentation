@@ -1,10 +1,9 @@
 import argparse
-from pathlib import Path
-import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.cuda.amp import autocast
+from datasets import load_dataset
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -14,8 +13,8 @@ from src.models import build_model
 
 
 @torch.no_grad()
-def sliding_window_inference(image: torch.Tensor, model: torch.nn.Module, window_size: int, stride: int, num_classes: int) -> torch.Tensor:
-    """Thực hiện suy luận bằng cửa sổ trượt (sliding window) cho ảnh kích thước lớn."""
+def sliding_window_inference(image, model, window_size, stride, num_classes):
+    """Thực hiện suy luận bằng cửa sổ trượt (sliding window) cho ảnh phân giải cao."""
     _, _, H, W = image.shape
     pad_h = max(0, window_size - H)
     pad_w = max(0, window_size - W)
@@ -37,8 +36,7 @@ def sliding_window_inference(image: torch.Tensor, model: torch.nn.Module, window
         for w in w_steps:
             patch = image[:, :, h:h+window_size, w:w+window_size]
             with autocast():
-                logits = model(patch)
-                probs = torch.sigmoid(logits)
+                probs = torch.sigmoid(model(patch))
             prob_map[:, :, h:h+window_size, w:w+window_size] += probs
             count_map[:, :, h:h+window_size, w:w+window_size] += 1.0
 
@@ -48,7 +46,7 @@ def sliding_window_inference(image: torch.Tensor, model: torch.nn.Module, window
 def main():
     parser = argparse.ArgumentParser(description="Evaluate segmentation model on dacl10k validation set")
     parser.add_argument("--config", type=str, required=True, help="Đường dẫn tới file YAML config")
-    parser.add_argument("--ckpt", type=str, required=True, help="Đường dẫn tới file checkpoint .pt/.pth")
+    parser.add_argument("--ckpt", type=str, required=True, help="Đường dẫn tới file checkpoint .pt")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -56,19 +54,21 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     num_classes = cfg["data"]["num_classes"]
 
-    # 1. Nạp tập dữ liệu Validation
+    # 1. Tải tập validation từ Hugging Face
+    print(f"Đang tải tập validation từ Hugging Face: {cfg['data']['hf_repo']}...")
+    hf_data = load_dataset(cfg["data"]["hf_repo"])
+    val_split = "validation" if "validation" in hf_data else "val"
+    
     val_ds = DACL10kDataset(
-        root_dir=cfg["data"]["data_dir"],
-        split="val",
+        hf_data[val_split],
         transforms=get_transforms(img_size=cfg["data"]["img_size"], is_train=False)
     )
     val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, num_workers=cfg["data"]["num_workers"])
 
-    # 2. Khởi tạo model và nạp checkpoint trọng số
+    # 2. Khởi tạo mô hình và nạp trọng số checkpoint
     model = build_model(cfg)
     ckpt = torch.load(args.ckpt, map_location=device)
     
-    # Xử lý linh hoạt trường hợp checkpoint lưu từ DataParallel hoặc State Dict trực tiếp
     state_dict = ckpt.get("model", ckpt)
     state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
     model.load_state_dict(state_dict)
@@ -76,7 +76,7 @@ def main():
     model.to(device)
     model.eval()
 
-    # Khởi tạo các biến tích lũy thống kê cho từng class
+    # Khởi tạo bộ đếm thống kê cho các chỉ số
     inter = np.zeros(num_classes, dtype=np.float64)
     union = np.zeros(num_classes, dtype=np.float64)
     tp = np.zeros(num_classes, dtype=np.float64)
@@ -87,13 +87,12 @@ def main():
     stride = cfg.get("eval", {}).get("stride", window_size // 2)
     threshold = cfg.get("eval", {}).get("threshold", 0.5)
 
-    # 3. Vòng lặp đánh giá toàn bộ tập validation
+    # 3. Tiến hành đánh giá toàn bộ tập validation bằng sliding window
     with torch.no_grad():
-        for images, masks in tqdm(val_loader, desc="Evaluating"):
+        for images, masks in tqdm(val_loader, desc="Evaluating Full Images"):
             images = images.to(device)
-            targets = masks[0].cpu().numpy() # Lấy sample đầu tiên trong batch size = 1 -> [C, H, W]
+            targets = masks[0].cpu().numpy()  # [C, H, W]
 
-            # Suy luận với sliding window để giữ nguyên độ phân giải gốc của ảnh
             probs = sliding_window_inference(
                 images, model,
                 window_size=window_size,
@@ -116,13 +115,13 @@ def main():
                 inter[c] += tp_c
                 union[c] += (tp_c + fp_c + fn_c)
 
-    # 4. Tính toán các chỉ số IoU, Dice, Precision, Recall theo chuẩn Spec
+    # 4. Tính toán các chỉ số mIoU, Dice, Precision, Recall chuẩn Spec
     iou = inter / (union + 1e-7)
     dice = (2 * tp) / (2 * tp + fp + fn + 1e-7)
     precision = tp / (tp + fp + 1e-7)
     recall = tp / (tp + fn + 1e-7)
 
-    # 5. In báo cáo kết quả chi tiết
+    # 5. In bảng báo cáo kết quả chi tiết
     print("\n" + "=" * 70)
     print(f"{'Class Name':<18} | {'IoU':<8} | {'Dice':<8} | {'Prec':<8} | {'Recall':<8}")
     print("-" * 70)
