@@ -1,0 +1,21 @@
+model: efficientnet-b0        # overridden by --model
+num_classes: 19
+image_size: 512
+data_root: /kaggle/working/dacl10k_hf   # folder containing samples.json and data/
+checkpoint_root: /kaggle/working/checkpoints
+
+batch_size: 8                 # per GPU
+grad_accum: 1                 # effective batch = batch_size * grad_accum * num_gpus
+num_workers: 2
+
+epochs: 40
+freeze_epochs: 2              # encoder lr = 0 for the first N epochs
+lr_encoder: 1.0e-4
+lr_decoder: 1.0e-3
+weight_decay: 1.0e-2
+grad_clip: 1.0
+
+mixed_precision: fp16         # T4 GPUs: use fp16 (no bf16)
+threshold: 0.5
+seed: 42
+use_wandb: false

@@ -19,7 +19,7 @@ venv/
 wandb/
 
 # Datasets
-data/
+/data/
 datasets/
 
 # Model weights, checkpoints & outputs
