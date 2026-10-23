@@ -117,3 +117,27 @@ def test_trainer_checkpoint_save_and_resume(tmp_path: Path) -> None:
     loaded_state = fresh_trainer.accelerator.unwrap_model(fresh_trainer.model).state_dict()
     for key in orig_state:
         assert torch.allclose(orig_state[key].cpu(), loaded_state[key].cpu())
+
+
+def test_multilabel_iou_metric_ignores_empty_classes() -> None:
+    """Verify classes with zero ground-truth and predicted positives
+    are excluded from mean IoU.
+    """
+    metric = MultiLabelIoUMetric(num_classes=3, threshold=0.5)
+
+    targets = torch.zeros(1, 3, 4, 4, dtype=torch.float32)
+    targets[:, 0, :2, :2] = 1.0
+    targets[:, 1, :2, :2] = 1.0
+
+    logits = torch.full_like(targets, -10.0)
+
+    # Correct predictions for classes 0 and 1.
+    logits[:, 0, :2, :2] = 10.0
+    logits[:, 1, :2, :2] = 10.0
+
+    # Class 2 has no positive pixels in either target or prediction.
+    metric.update(logits, targets)
+    result = metric.compute()
+
+    assert result["miou"] == pytest.approx(1.0, abs=1e-5)
+    assert len(result["per_class_iou"]) == 3
