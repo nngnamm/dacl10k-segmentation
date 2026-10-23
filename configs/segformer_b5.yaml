@@ -1,0 +1,29 @@
+project_name: "dacl10k-segformer"
+exp_name: "segformer_b5_hf"
+seed: 42
+
+data:
+  hf_repo: "Voxel51/dacl10k"
+  num_classes: 19
+  img_size: 512
+  batch_size: 4
+  num_workers: 2
+
+model:
+  arch: "segformer"
+  encoder_name: "mit_b5"
+  pretrained: true
+
+train:
+  epochs: 20
+  lr: 0.00006
+  weight_decay: 0.01
+  grad_accum_steps: 2
+  focal_weight: 0.5
+  dice_weight: 0.5
+  save_dir: "checkpoints"
+
+eval:
+  window_size: 512
+  stride: 384
+  threshold: 0.5
