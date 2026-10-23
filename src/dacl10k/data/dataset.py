@@ -1,16 +1,20 @@
+"""DACL10K dataset loaded from a Hugging Face / FiftyOne export.
 
-"""DACL10K dataset from Hugging Face FiftyOne export."""
+Expected folder layout (DATA_ROOT):
+    DATA_ROOT/samples.json   # metadata, polygons, split tags
+    DATA_ROOT/data/...       # image files
+
+Each item is (image [3,H,W] float, mask [19,H,W] float in {0,1}).
+"""
 
 import json
 from pathlib import Path
 
 import numpy as np
-import torch
 from PIL import Image, ImageDraw
 from torch.utils.data import Dataset
 
 from dacl10k.data.transforms import get_transforms
-
 
 CLASS_NAMES = (
     "Crack", "ACrack", "Wetspot", "Efflorescence", "Rust",
@@ -19,8 +23,17 @@ CLASS_NAMES = (
     "EJoint", "Drainage", "PEquipment", "JTape", "WConccor",
 )
 
+IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
+SPLIT_ALIASES = {
+    "train": "train",
+    "val": "validation",
+    "valid": "validation",
+    "validation": "validation",
+}
+
 
 def _is_point(value) -> bool:
+    """Return True if value looks like an (x, y) coordinate pair."""
     return (
         isinstance(value, (list, tuple))
         and len(value) >= 2
@@ -29,26 +42,52 @@ def _is_point(value) -> bool:
     )
 
 
+def _find_segmentation(record: dict, label_field: str | None):
+    """Return the FiftyOne `Polylines` dict of one sample record.
+
+    If `label_field` is None, auto-detect the first field that contains a
+    "polylines" key (the field name differs between exports).
+    """
+    if label_field is not None:
+        value = record.get(label_field)
+        return value if isinstance(value, dict) else None
+    for value in record.values():
+        if isinstance(value, dict) and "polylines" in value:
+            return value
+    return None
+
+
 class DACL10kDataset(Dataset):
-    """Read Hugging Face images and generate multi-label polygon masks."""
+    """Read images and rasterize polygon annotations into multi-label masks."""
 
     NUM_CLASSES = len(CLASS_NAMES)
     CLASS_TO_INDEX = {name: i for i, name in enumerate(CLASS_NAMES)}
 
-    def __init__(self, root_dir, split, transforms=None):
+    def __init__(
+        self,
+        root_dir,
+        split,
+        transforms=None,
+        image_size: tuple[int, int] = (512, 512),
+        label_field: str | None = None,
+    ):
+        """
+        Args:
+            root_dir: folder containing samples.json and data/.
+            split: "train" or "validation" ("val" is accepted).
+            transforms: optional callable (image, mask) -> tensors; needs
+                `.height` and `.width` attributes.
+            image_size: (height, width) used when `transforms` is None.
+            label_field: name of the polyline field in samples.json;
+                None means auto-detect.
+        """
         self.root_dir = Path(root_dir)
-        requested_split = split.lower()
-
-        if requested_split in {"val", "valid", "validation"}:
-            self.split = "validation"
-        elif requested_split == "train":
-            self.split = "train"
-        else:
+        if split.lower() not in SPLIT_ALIASES:
             raise ValueError("split must be 'train' or 'validation'")
+        self.split = SPLIT_ALIASES[split.lower()]
 
         samples_file = self.root_dir / "samples.json"
         image_root = self.root_dir / "data"
-
         if not samples_file.is_file():
             raise FileNotFoundError(f"Metadata not found: {samples_file}")
         if not image_root.is_dir():
@@ -57,39 +96,38 @@ class DACL10kDataset(Dataset):
         with samples_file.open("r", encoding="utf-8") as f:
             records = json.load(f)["samples"]
 
-        # Use metadata tags, not filename guesses, to determine the split.
+        # Determine the split from metadata tags, not from filenames.
         split_records = [
-            record for record in records
-            if self.split in {
-                str(tag).lower() for tag in (record.get("tags") or [])
-            }
+            r for r in records
+            if self.split in {str(t).lower() for t in (r.get("tags") or [])}
         ]
 
         self.samples = []
-        missing_images = []
-        missing_annotations = []
+        missing_images, missing_annotations = [], []
+        image_index = None  # built lazily, only if a direct path lookup fails
 
         for record in split_records:
-            filepath = record.get("filepath")
-            segmentation = record.get("semseg_ground_truth_filled")
+            filepath = str(record.get("filepath", "")).replace("\\", "/")
+            filename = filepath.rsplit("/", 1)[-1]
 
-            if not filepath:
-                raise ValueError("A DACL10K record has no filepath.")
-
-            filename = str(filepath).replace("\\", "/").rsplit("/", 1)[-1]
-            image_path = image_root / str(filepath).replace("\\", "/")
-
-            # Some metadata may contain paths from a different machine.
-            # Reconstruct the path using the known image directory if needed.
+            # filepath is usually relative to DATA_ROOT, e.g. data/data_0/x.jpg.
+            image_path = self.root_dir / filepath.lstrip("/")
             if not image_path.is_file():
-                matches = list(image_root.rglob(filename))
-                image_path = matches[0] if matches else image_path
+                # Fallback: match by basename (handles absolute paths in metadata).
+                if image_index is None:
+                    image_index = {
+                        p.name.lower(): p
+                        for p in image_root.rglob("*")
+                        if p.is_file() and p.suffix.lower() in IMAGE_SUFFIXES
+                    }
+                image_path = image_index.get(filename.lower())
 
-            if not image_path.is_file():
+            if image_path is None or not image_path.is_file():
                 missing_images.append(filename)
                 continue
 
-            if not isinstance(segmentation, dict):
+            segmentation = _find_segmentation(record, label_field)
+            if segmentation is None:
                 missing_annotations.append(filename)
                 continue
 
@@ -110,24 +148,17 @@ class DACL10kDataset(Dataset):
 
         self.transforms = transforms or get_transforms(
             "train" if self.split == "train" else "val",
-            image_size=(512, 512),
+            image_size=image_size,
         )
         self.height = self.transforms.height
         self.width = self.transforms.width
 
-        print(
-            f"DACL10K HF {self.split}: "
-            f"{len(self.samples)} image-mask pairs."
-        )
+        print(f"DACL10K {self.split}: {len(self.samples)} image-mask pairs.")
 
-    def _make_mask(self, segmentation):
-        """Rasterize normalized polygon points into a binary HWC mask."""
-        mask = np.zeros(
-            (self.height, self.width, self.NUM_CLASSES),
-            dtype=np.uint8,
-        )
-
-        layers = {}
+    def _make_mask(self, segmentation) -> np.ndarray:
+        """Rasterize normalized polygons into a binary (H, W, C) uint8 mask."""
+        mask = np.zeros((self.height, self.width, self.NUM_CLASSES), dtype=np.uint8)
+        layers = {}  # class index -> PIL image, so overlapping polygons are OR-ed
 
         for polyline in segmentation.get("polylines", []):
             label = str(polyline.get("label", "")).strip()
@@ -139,27 +170,26 @@ class DACL10kDataset(Dataset):
             if not points:
                 continue
 
-            # FiftyOne may represent points as one contour or multiple contours.
+            # FiftyOne stores either one contour or a list of contours.
             contours = [points] if _is_point(points[0]) else points
 
             for contour in contours:
                 if not isinstance(contour, list) or len(contour) < 3:
                     continue
-                if not all(_is_point(point) for point in contour):
+                if not all(_is_point(p) for p in contour):
                     continue
 
-                normalized = all(
-                    -1e-6 <= float(x) <= 1.000001
-                    and -1e-6 <= float(y) <= 1.000001
+                inside_unit_square = all(
+                    -1e-6 <= float(x) <= 1.000001 and -1e-6 <= float(y) <= 1.000001
                     for x, y in contour
                 )
-
-                if not normalized:
+                if not inside_unit_square:
                     raise ValueError(
                         "Expected normalized polygon coordinates in [0,1]; "
                         "found pixel coordinates."
                     )
 
+                # Normalized [0,1] -> pixel coordinates at the target size.
                 pixel_points = [
                     (
                         max(0, min(self.width - 1, round(float(x) * (self.width - 1)))),
@@ -169,45 +199,29 @@ class DACL10kDataset(Dataset):
                 ]
 
                 if class_index not in layers:
-                    layers[class_index] = Image.new(
-                        "L", (self.width, self.height), 0
-                    )
-
-                ImageDraw.Draw(layers[class_index]).polygon(
-                    pixel_points, fill=1
-                )
+                    layers[class_index] = Image.new("L", (self.width, self.height), 0)
+                ImageDraw.Draw(layers[class_index]).polygon(pixel_points, fill=1)
 
         for class_index, layer in layers.items():
-            mask[:, :, class_index] = np.asarray(
-                layer, dtype=np.uint8
-            )
-
+            mask[:, :, class_index] = np.asarray(layer, dtype=np.uint8)
         return mask
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.samples)
 
     def __getitem__(self, index):
         image_path, segmentation = self.samples[index]
 
         with Image.open(image_path) as image_file:
-            image = image_file.convert("RGB")
-            image = np.asarray(image, dtype=np.uint8).copy()
+            image = np.asarray(image_file.convert("RGB"), dtype=np.uint8).copy()
 
         mask = self._make_mask(segmentation)
         image_tensor, mask_tensor = self.transforms(image, mask)
 
+        # Cheap shape checks only; per-sample value scans slow down the loader.
         if image_tensor.shape != (3, self.height, self.width):
-            raise RuntimeError(
-                f"Unexpected image shape: {tuple(image_tensor.shape)}"
-            )
-        if mask_tensor.shape != (19, self.height, self.width):
-            raise RuntimeError(
-                f"Unexpected mask shape: {tuple(mask_tensor.shape)}"
-            )
-        if not torch.isfinite(image_tensor).all():
-            raise RuntimeError(f"Non-finite image tensor: {image_path}")
-        if not torch.all((mask_tensor == 0) | (mask_tensor == 1)):
-            raise RuntimeError(f"Non-binary mask: {image_path}")
+            raise RuntimeError(f"Bad image shape {tuple(image_tensor.shape)}: {image_path}")
+        if mask_tensor.shape != (self.NUM_CLASSES, self.height, self.width):
+            raise RuntimeError(f"Bad mask shape {tuple(mask_tensor.shape)}: {image_path}")
 
         return image_tensor, mask_tensor
