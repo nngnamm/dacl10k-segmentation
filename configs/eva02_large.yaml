@@ -1,0 +1,30 @@
+project_name: "dacl10k-segmentation"
+exp_name: "eva02_large_finetune"
+seed: 42
+
+data:
+  hf_repo: "Voxel51/dacl10k"
+  num_classes: 19
+  img_size: 448               # Chuẩn patch_size 14 của EVA-02-Large
+  batch_size: 2               # Nhỏ để vừa 16GB VRAM của Kaggle T4
+  num_workers: 2
+
+model:
+  arch: "eva02_large"
+  backbone_name: "eva02_large_patch14_448.mim_m38m_ft_in22k_in1k"
+  pretrained: true
+  grad_checkpointing: true    # Bắt buộc bật trên Kaggle T4
+
+train:
+  epochs: 15
+  lr: 0.0001                  # Head LR = 1e-4, Backbone LR sẽ tự chia 10 (1e-5)
+  weight_decay: 0.01
+  grad_accum_steps: 8         # Effective Batch Size = 2 * 8 = 16
+  focal_weight: 0.5
+  dice_weight: 0.5
+  save_dir: "checkpoints"
+
+eval:
+  window_size: 448
+  stride: 336
+  threshold: 0.5

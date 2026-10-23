@@ -1,0 +1,28 @@
+project_name: "dacl10k-segmentation"
+exp_name: "att_unet_baseline" # Đổi thành "unet_baseline" khi chạy U-Net thường
+seed: 42
+
+data:
+  hf_repo: "Voxel51/dacl10k"
+  num_classes: 19
+  img_size: 512
+  batch_size: 8
+  num_workers: 2
+
+model:
+  arch: "att_unet"            # Chọn: "unet" hoặc "att_unet"
+  in_channels: 3
+
+train:
+  epochs: 25
+  lr: 0.0003
+  weight_decay: 0.01
+  grad_accum_steps: 2
+  focal_weight: 0.5
+  dice_weight: 0.5
+  save_dir: "checkpoints"
+
+eval:
+  window_size: 512
+  stride: 384
+  threshold: 0.5
