@@ -59,8 +59,8 @@ class DACL10kDataset(Dataset):
 def get_transforms(img_size: int = 512, is_train: bool = True):
     if is_train:
         return A.Compose([
-            A.RandomCrop(height=img_size, width=img_size, always_apply=True),
-            A.HorizontalFlip(p=0.5),
+            A.PadIfNeeded(min_height=img_size, min_width=img_size, border_mode=cv2.BORDER_CONSTANT, p=1.0),
+            A.RandomCrop(height=img_size, width=img_size, p=1.0),
             A.VerticalFlip(p=0.5),
             A.RandomRotate90(p=0.5),
             A.ColorJitter(brightness=0.2, contrast=0.2, p=0.3),
