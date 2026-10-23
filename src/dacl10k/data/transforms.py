@@ -58,9 +58,11 @@ class DACL10kTransforms:
                 "Image and mask must have the same height and width."
             )
 
+        # DACL10K .npy images are RGB uint8 arrays.
         image_pil = Image.fromarray(image).convert("RGB")
 
-        # Apply image-only augmentation during training.
+        # Apply augmentation only to training images.
+        # Geometric transformations must also be applied to the masks.
         if self.split == "train":
             if random.random() < 0.5:
                 image_pil = image_pil.transpose(
@@ -68,6 +70,7 @@ class DACL10kTransforms:
                 )
                 mask = np.flip(mask, axis=1).copy()
 
+            # Photometric transformations apply only to the image.
             if random.random() < 0.3:
                 image_pil = ImageEnhance.Brightness(
                     image_pil
@@ -77,39 +80,47 @@ class DACL10kTransforms:
                     image_pil
                 ).enhance(random.uniform(0.85, 1.15))
 
-        # PIL takes size as (width, height).
-        image_pil = image_pil.resize(
-            (self.width, self.height),
-            resample=Image.Resampling.BILINEAR,
-        )
-
-        # Resize each class mask separately with nearest-neighbor.
-        resized_channels = []
-
-        for channel_idx in range(mask.shape[2]):
-            channel = Image.fromarray(mask[:, :, channel_idx])
-
-            channel = channel.resize(
+        # PIL image.size is (width, height), whereas NumPy uses (height, width).
+        # Skip resizing when the preprocessed image already has target dimensions.
+        if image_pil.size != (self.width, self.height):
+            image_pil = image_pil.resize(
                 (self.width, self.height),
-                resample=Image.Resampling.NEAREST,
+                resample=Image.Resampling.BILINEAR,
             )
 
-            resized_channels.append(np.asarray(channel, dtype=np.uint8))
+        # DACL10K masks are HWC binary arrays.
+        # Skip the expensive per-channel resize when dimensions already match.
+        if mask.shape[:2] != (self.height, self.width):
+            resized_channels = []
 
-        mask = np.stack(resized_channels, axis=-1)
+            for channel_idx in range(mask.shape[2]):
+                channel = Image.fromarray(mask[:, :, channel_idx])
 
-        # Convert image to float and apply ImageNet normalization.
+                channel = channel.resize(
+                    (self.width, self.height),
+                    resample=Image.Resampling.NEAREST,
+                )
+
+                resized_channels.append(
+                    np.asarray(channel, dtype=np.uint8)
+                )
+
+            mask = np.stack(resized_channels, axis=-1)
+
+        # Normalize RGB image using ImageNet statistics.
         image_array = np.asarray(
             image_pil, dtype=np.float32
         ) / 255.0
 
         image_array = (image_array - self.mean) / self.std
 
-        # HWC -> CHW, as required by PyTorch.
+        # Convert image HWC -> CHW.
         image_tensor = torch.from_numpy(
             np.ascontiguousarray(image_array.transpose(2, 0, 1))
         ).float()
 
+        # Convert mask HWC -> CHW.
+        # Preserve the binary 0/1 labels without normalization.
         mask_tensor = torch.from_numpy(
             np.ascontiguousarray(mask.transpose(2, 0, 1))
         ).float()
