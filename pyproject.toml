@@ -15,11 +15,10 @@ dependencies = [
     "segmentation-models-pytorch>=0.3.3",
     "albumentations>=1.4.0",
     "opencv-python-headless>=4.9.0",
-    "dacl10k-toolkit>=0.1.0",
     "accelerate>=0.27.0",
     "wandb>=0.16.0",
     "pyyaml>=6.0",
-    "numpy>=1.24.0,<2.0.0",
+    "numpy>=1.24.0",
     "tqdm>=4.66.0",
 ]
 
