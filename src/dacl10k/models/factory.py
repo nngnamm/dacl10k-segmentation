@@ -31,6 +31,7 @@ def build_model(cfg: dict[str, Any]) -> nn.Module:
         "segformer": smp.Segformer,
         "unetplusplus": smp.UnetPlusPlus,
         "unet": smp.Unet,
+        "deeplabv3": smp.DeepLabV3,
         "deeplabv3plus": smp.DeepLabV3Plus,
         "fpn": smp.FPN,
         "manet": smp.MAnet,

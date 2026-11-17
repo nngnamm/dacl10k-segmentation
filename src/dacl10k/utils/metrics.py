@@ -34,8 +34,8 @@ class MultiLabelIoUMetric:
             targets: Ground truth binary tensor of shape [B, C, H, W].
         """
         probs = torch.sigmoid(logits)
-        preds = (probs >= self.threshold).to(torch.float64)
-        targets_f = (targets >= 0.5).to(torch.float64)
+        preds = (probs >= self.threshold).to(torch.float32)
+        targets_f = (targets >= 0.5).to(torch.float32)
 
         # Sum across (Batch, H, W) -> shape [C]
         dims = (0, 2, 3)
@@ -46,13 +46,21 @@ class MultiLabelIoUMetric:
         self.union += batch_union
 
     def compute(self) -> dict[str, float | list[float]]:
-        """Compute mean IoU and per-class IoU across all accumulated batches.
+        """Compute mean IoU over classes with non-zero union."""
 
-        Returns:
-            Dictionary with keys "miou" (float) and "per_class_iou" (list of floats).
-        """
+        # Calculate IoU for each class.
         per_class_iou = (self.intersection + self.eps) / (self.union + self.eps)
-        miou = float(per_class_iou.mean().item())
+
+        # Include only classes that appear in the ground truth
+        # or are predicted as positive.
+        valid_classes = self.union > 0
+
+        if valid_classes.any():
+            miou = float(per_class_iou[valid_classes].mean().item())
+        else:
+            # No valid classes were observed.
+            miou = 0.0
+
         return {
             "miou": miou,
             "per_class_iou": [float(x) for x in per_class_iou.tolist()],

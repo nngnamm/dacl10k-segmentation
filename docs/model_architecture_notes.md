@@ -1,0 +1,7 @@
+Input: ảnh RGB, kích thước [512, 512] theo cấu hình.
+Encoder: efficientnet-b4 hoặc efficientnet-b5. Đây là backbone trích xuất đặc trưng, thay thế cho ResNet thông thường.
+Segmentation head: Sử dụng kiến trúc DeepLabV3+ (trong code khởi tạo qua smp.DeepLabV3Plus). Phần này sử dụng cơ chế ASPP (Atrous Spatial Pyramid Pooling) kết hợp với cấu trúc Encoder-Decoder để nhận diện bối cảnh đa tỷ lệ và làm sắc nét viền vật thể.
+Output: Raw logits (chưa qua hàm kích hoạt) có số kênh tương ứng với num_classes = 19. Hình dạng tensor đầu ra là [Batch, 19, H, W].
+Loss:BCEWithLogitsLoss (Binary Cross Entropy with Logits Loss). Trong code Trainer, hàm khởi tạo định nghĩa rõ: self.criterion = criterion if criterion is not None else nn.BCEWithLogitsLoss(). Vì đây là bài toán multi-label segmentation (một pixel có thể thuộc nhiều lớp khuyết tật), model dùng BCE thay vì CrossEntropy thông thường.
+Metrics: MultiLabelIoUMetric. Đọc file metrics, lớp này tính toán 2 chỉ số là miou (Mean IoU) và per_class_iou (IoU của từng lớp). Các logits được đi qua hàm sigmoid và cắt ở ngưỡng threshold=0.5 để tạo binary mask trước khi so sánh với nhãn thật.
+Pretrained weights: Biến encoder_weights: "imagenet" được truyền thẳng vào hàm build_model để gọi trọng số huấn luyện sẵn trên tập ImageNet, giúp mô hình hội tụ nhanh hơn.
